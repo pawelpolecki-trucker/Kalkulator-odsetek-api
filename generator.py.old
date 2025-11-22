@@ -1,0 +1,144 @@
+import requests
+import xml.etree.ElementTree as ET
+import json
+from datetime import datetime
+import urllib3
+
+# Wyłączamy ostrzeżenia SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# --- KONFIGURACJA ---
+NBP_XML_URL = "https://static.nbp.pl/dane/stopy/stopy_procentowe_archiwum.xml"
+START_YEAR = 2015
+OUTPUT_FILE = "rates.json"
+
+# Stałe marże
+MARZA_USTAWOWE = 3.5
+MARZA_OPOZNIENIE = 5.5
+
+def pobierz_dane_nbp():
+    try:
+        print(f"Pobieranie XML z NBP...")
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(NBP_XML_URL, verify=False, headers=headers)
+        response.raise_for_status()
+        return response.content
+    except Exception as e:
+        print(f"BŁĄD POBIERANIA: {e}")
+        return None
+
+def parsuj_i_oblicz(xml_content):
+    try:
+        root = ET.fromstring(xml_content)
+    except ET.ParseError as e:
+        print(f"Błąd parsowania XML: {e}")
+        return []
+
+    rates_list = []
+    
+    # KROK 1: Znajdujemy wszystkie "główne" pozycje (te z datą)
+    # Używamy findall, żeby szukać tylko bezpośrednich dzieci, a nie zagłębiać się od razu
+    glowne_pozycje = root.findall('pozycja')
+    
+    print(f"Znaleziono {len(glowne_pozycje)} głównych wpisów z datami. Analizowanie...")
+
+    for parent in glowne_pozycje:
+        # Pobieramy datę z elementu nadrzędnego
+        data_str = parent.get('obowiazuje_od')
+        
+        if not data_str:
+            continue
+
+        try:
+            data_obj = datetime.strptime(data_str, "%Y-%m-%d")
+        except ValueError:
+            continue
+
+        if data_obj.year < START_YEAR:
+            continue
+
+        # KROK 2: Szukamy stóp PROCENTOWYCH wewnątrz tego rodzica
+        stopa_ref = None
+        stopa_lom = None
+
+        # Iterujemy po dzieciach tej konkretnej pozycji
+        for child in parent.findall('pozycja'):
+            typ_id = child.get('id')
+            wartosc_str = child.get('oprocentowanie')
+
+            if not wartosc_str:
+                continue
+            
+            try:
+                # Zamiana "24,00" na float 24.00
+                val = float(wartosc_str.replace(',', '.'))
+            except ValueError:
+                continue
+
+            if typ_id == 'ref':
+                stopa_ref = val
+            elif typ_id == 'lom':
+                stopa_lom = val
+
+        # Jeśli nie znaleziono stopy referencyjnej w tej grupie, pomijamy
+        if stopa_ref is None:
+            continue
+        
+        # Zabezpieczenie dla lombardu
+        if stopa_lom is None:
+            stopa_lom = 0.0
+
+        # --- OBLICZENIA (Bez zmian) ---
+
+        # 1. Ustawowe (Ref + 3.5%)
+        rate_ust = round((stopa_ref + MARZA_USTAWOWE) / 100, 4)
+        rates_list.append({
+            "id": f"AUTO-UST-{data_str}",
+            "effectiveDate": f"{data_str}T00:00:00Z",
+            "rate": rate_ust,
+            "type": "ODSETKI USTAWOWE"
+        })
+
+        # 2. Za Opóźnienie (Ref + 5.5%)
+        rate_opoz = round((stopa_ref + MARZA_OPOZNIENIE) / 100, 4)
+        rates_list.append({
+            "id": f"AUTO-OPOZ-{data_str}",
+            "effectiveDate": f"{data_str}T00:00:00Z",
+            "rate": rate_opoz,
+            "type": "ODSETKI ZA OPÓŹNIENIE"
+        })
+
+        # 3. Podatkowe (Lombard + 2%, min 8%)
+        podstawa_podatkowe = stopa_lom + 2.0
+        final_podatkowe = max(podstawa_podatkowe, 8.0)
+
+        rate_pod = round(final_podatkowe / 100, 4)
+        rates_list.append({
+            "id": f"AUTO-POD-{data_str}",
+            "effectiveDate": f"{data_str}T00:00:00Z",
+            "rate": rate_pod,
+            "type": "ODSETKI PODATKOWE"
+        })
+
+    # Sortowanie
+    rates_list.sort(key=lambda x: x['effectiveDate'], reverse=True)
+    return rates_list
+
+# --- START ---
+xml_content = pobierz_dane_nbp()
+if xml_content:
+    final_json = parsuj_i_oblicz(xml_content)
+    
+    if final_json:
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            json.dump(final_json, f, indent=4)
+        print(f"SUKCES! Zapisano {len(final_json)} stawek do {OUTPUT_FILE}")
+        print("Wpisz ./push.sh aby wysłać zmiany!")
+    else:
+        print("Brak danych po przetworzeniu. Sprawdź czy rok 2015 nie jest zbyt nowy (w pliku widziałem 1998, więc powinno być ok).")
+else:
+    print("Nie udało się pobrać pliku.")
+
+
