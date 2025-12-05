@@ -1,5 +1,17 @@
 [
     {
+        "id": "AUTO-UST-2025-12-04",
+        "effectiveDate": "2025-12-04T00:00:00Z",
+        "rate": 0.075,
+        "type": "ODSETKI USTAWOWE"
+    },
+    {
+        "id": "AUTO-OPOZ-2025-12-04",
+        "effectiveDate": "2025-12-04T00:00:00Z",
+        "rate": 0.095,
+        "type": "ODSETKI ZA OP\u00d3\u0179NIENIE"
+    },
+    {
         "id": "AUTO-UST-2025-11-06",
         "effectiveDate": "2025-11-06T00:00:00Z",
         "rate": 0.0775,
